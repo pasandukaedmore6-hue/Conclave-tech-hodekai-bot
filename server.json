@@ -1,0 +1,1341 @@
+// ============================================================
+// HODEKAI — WHATSAPP SERVER
+// ============================================================
+
+const {
+    default: makeWASocket,
+    DisconnectReason,
+    useMultiFileAuthState,
+    fetchLatestBaileysVersion
+} = require("@whiskeysockets/baileys");
+
+const express = require("express");
+const fs = require("fs");
+const path = require("path");
+const cors = require("cors");
+require("dotenv").config();
+
+// ============================================================
+// CONFIG
+// ============================================================
+
+const PORT = process.env.PORT || 3000;
+
+// YOUR ORIGINAL BOT NUMBER — DO NOT CHANGE
+const BOT_NUMBER = process.env.BOT_NUMBER || "256775032199";
+
+const SESSION_ID = process.env.SESSION_ID || null;
+
+// ============================================================
+// AUTH DIRECTORY
+// ============================================================
+
+const AUTH_DIR = path.join(__dirname, "auth_info_baileys");
+
+if (!fs.existsSync(AUTH_DIR)) {
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
+}
+
+// ============================================================
+// DATA DIRECTORY
+// ============================================================
+
+const DATA_DIR = path.join(__dirname, "data");
+const DATA_FILE = path.join(DATA_DIR, "conclave_data.json");
+
+if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+// ============================================================
+// EXPRESS SERVER
+// ============================================================
+
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+app.get("/", (req, res) => {
+    res.json({
+        bot: "HODEKAI",
+        company: "CONCLAVE INDUSTRIES",
+        version: "5.0",
+        status: "ONLINE",
+        whatsapp: "STARTING"
+    });
+});
+
+app.get("/stats", (req, res) => {
+    res.json({
+        bot: "HODEKAI",
+        status: "ONLINE",
+        users: Object.keys(USERS).length,
+        guilds: Object.keys(GUILDS).length,
+        companies: Object.keys(COMPANIES).length,
+        commands: COMMAND_COUNTER
+    });
+});
+
+app.listen(PORT, () => {
+    console.log(`🌐 HODEKAI HTTP server running on port ${PORT}`);
+});
+
+// ============================================================
+// BOT DATA
+// ============================================================
+
+let USERS = {};
+let GUILDS = {};
+let COMPANIES = {};
+let BANK = {};
+let COOLDOWNS = {};
+let SUGGESTIONS = {};
+
+let GOVERNMENT_FUNDS = 0;
+let BOT_ACTIVE = true;
+
+let SUGGESTION_ID = 1;
+let JOB_ID_COUNTER = 1;
+let COMMAND_COUNTER = 0;
+
+// ============================================================
+// LOAD DATA
+// ============================================================
+
+function loadData() {
+    if (!fs.existsSync(DATA_FILE)) {
+        console.log("📁 No existing Conclave data found. Starting fresh.");
+        return;
+    }
+
+    try {
+        const data = JSON.parse(
+            fs.readFileSync(DATA_FILE, "utf8")
+        );
+
+        USERS = data.USERS || {};
+        GUILDS = data.GUILDS || {};
+        COMPANIES = data.COMPANIES || {};
+        BANK = data.BANK || {};
+        COOLDOWNS = data.COOLDOWNS || {};
+        SUGGESTIONS = data.SUGGESTIONS || {};
+
+        GOVERNMENT_FUNDS = Number(data.GOVERNMENT_FUNDS) || 0;
+        BOT_ACTIVE =
+            typeof data.BOT_ACTIVE === "boolean"
+                ? data.BOT_ACTIVE
+                : true;
+
+        SUGGESTION_ID = Number(data.SUGGESTION_ID) || 1;
+        JOB_ID_COUNTER = Number(data.JOB_ID_COUNTER) || 1;
+        COMMAND_COUNTER = Number(data.COMMAND_COUNTER) || 0;
+
+        // Repair old user records
+        for (const [number, user] of Object.entries(USERS)) {
+            if (!user || typeof user !== "object") {
+                delete USERS[number];
+                continue;
+            }
+
+            user.xenoShards = Number(user.xenoShards) || 0;
+            user.bank = Number(user.bank) || 0;
+            user.wins = Number(user.wins) || 0;
+
+            user.role = user.role || "MEMBER";
+            user.joinDate =
+                user.joinDate ||
+                user.joinDtae ||
+                new Date().toDateString();
+
+            delete user.joinDtae;
+        }
+
+        console.log("📂 Conclave data loaded.");
+    } catch (error) {
+        console.error(
+            "❌ Could not load Conclave data:",
+            error.message
+        );
+    }
+}
+
+// ============================================================
+// SAVE DATA
+// ============================================================
+
+function saveData() {
+    const data = {
+        USERS,
+        GUILDS,
+        COMPANIES,
+        BANK,
+        COOLDOWNS,
+        SUGGESTIONS,
+        GOVERNMENT_FUNDS,
+        BOT_ACTIVE,
+        SUGGESTION_ID,
+        JOB_ID_COUNTER,
+        COMMAND_COUNTER
+    };
+
+    try {
+        fs.writeFileSync(
+            DATA_FILE,
+            JSON.stringify(data, null, 2)
+        );
+    } catch (error) {
+        console.error(
+            "❌ Could not save Conclave data:",
+            error.message
+        );
+    }
+}
+
+// ============================================================
+// BASIC HELPERS
+// ============================================================
+
+function random(array) {
+    return array[Math.floor(Math.random() * array.length)];
+}
+
+function getMixedResponse() {
+    const responses = [
+        "another day in the Conclave.",
+        "HODEKAI is watching. 👀",
+        "keep the chaos organized.",
+        "system status: unnecessarily dramatic.",
+        "the paperwork continues.",
+        "Conclave operations remain operational.",
+        "that was a very serious command. probably.",
+        "processing... with questionable confidence.",
+        "all systems nominal. 🖤",
+        "HODEKAI has entered the chat."
+    ];
+
+    return random(responses);
+}
+
+function parseAmount(value) {
+    const amount = Number(value);
+
+    if (
+        !Number.isInteger(amount) ||
+        amount <= 0
+    ) {
+        return null;
+    }
+
+    return amount;
+}
+
+// ============================================================
+// USER SYSTEM
+// ============================================================
+
+const STARTING_XS = 1000;
+const DAILY_XS = 100;
+const FINE = 500;
+
+const OWNER_NUMBERS = {
+    FATHER: "263787876771",
+    CO_CREATOR: "26378787677"
+};
+
+let MODS = [
+    "2348123885002",
+    "2349168527304",
+    "2348150350359"
+];
+
+function getRole(number) {
+    if (number === OWNER_NUMBERS.FATHER) {
+        return "FATHER";
+    }
+
+    if (number === OWNER_NUMBERS.CO_CREATOR) {
+        return "CO_CREATOR";
+    }
+
+    if (MODS.includes(number)) {
+        return "MOD";
+    }
+
+    return "MEMBER";
+}
+
+function getUser(number) {
+    if (
+        !USERS[number] ||
+        typeof USERS[number] !== "object"
+    ) {
+        USERS[number] = {
+            xenoShards: STARTING_XS,
+            bank: 0,
+            role: getRole(number),
+            joinDate: new Date().toDateString(),
+            wins: 0,
+            lastDaily: 0
+        };
+    } else {
+        USERS[number].role = getRole(number);
+    }
+
+    return USERS[number];
+}
+
+function giveXenoShards(number, amount) {
+    if (
+        !Number.isFinite(amount) ||
+        amount <= 0
+    ) {
+        return false;
+    }
+
+    getUser(number).xenoShards += amount;
+
+    return true;
+}
+
+function takeXenoShards(number, amount) {
+    const user = getUser(number);
+
+    if (
+        !Number.isFinite(amount) ||
+        amount <= 0
+    ) {
+        return false;
+    }
+
+    if (user.xenoShards < amount) {
+        return false;
+    }
+
+    user.xenoShards -= amount;
+
+    return true;
+}
+
+// ============================================================
+// ROLE CHECKS
+// ============================================================
+
+function isOwner(number) {
+    return (
+        number === OWNER_NUMBERS.FATHER ||
+        number === OWNER_NUMBERS.CO_CREATOR
+    );
+}
+
+function isAdmin(number) {
+    return (
+        isOwner(number) ||
+        MODS.includes(number)
+    );
+}
+
+// ============================================================
+// STATS
+// ============================================================
+
+function getTotalMembers() {
+    return Object.keys(USERS).length;
+}
+
+function getStats() {
+    return {
+        members: Object.keys(USERS).length,
+        guilds: Object.keys(GUILDS).length,
+        companies: Object.keys(COMPANIES).length
+    };
+}
+
+// ============================================================
+// BOT RESPONSES
+// ============================================================
+
+function botInfoBox() {
+    const stats = getStats();
+
+    return `
+╭─〔 🖤 HODEKAI INFO 〕─╮
+│ NAME: HODEKAI
+│ COMPANY: CONCLAVE INDUSTRIES
+│ FATHER: HOUDEKAI
+│ CO-CREATOR: SHOUKATSU-KATSUKI
+│ MODEL: CONCLAVE MODEL 1
+│ VERSION: 5.0
+│ STATUS: ONLINE
+│ MEMBERS: ${stats.members}
+│ GUILDS: ${stats.guilds}
+│ COMPANIES: ${stats.companies}
+╰─〔 LOYALTY. POWER. CONCLAVE. 〕─╯
+`;
+}
+
+function menuBox() {
+    return `
+╭─〔 🖤 HODEKAI MENU 〕─╮
+│ :bot       Bot information
+│ :profile   Your profile
+│ :bal       Wallet + bank
+│ :status    System status
+│ :members   Member count
+│
+│ :economy   Economy commands
+│ :guild     Guild commands
+│ :company   Company commands
+│
+│ :ping      Connection test
+│ :play      Music queue
+│ :talk      Talk to Hodekai
+│ :help      Command directory
+│ :boxes     Available systems
+╰──────────────────────╯
+`;
+}
+
+function commandBox() {
+    return `
+╭─〔 📜 COMMAND DIRECTORY 〕─╮
+│ INFO
+│ :bot :profile :bal :status :members :ping
+│
+│ ECONOMY
+│ :cheque <amount>
+│ :daily
+│ :bank dep <amount>
+│ :bank wit <amount>
+│ :pay <user> <amount>
+│
+│ GUILD
+│ :guild create <name>
+│ :guild info <name>
+│ :guild donate <amount>
+│ :guild withdraw <amount>
+│ :guild top
+│
+│ COMPANY
+│ :company create <name>
+│ :company info <name>
+│ :company hire <user>
+│ :company pay <user> <amount>
+│ :company deposit <amount>
+│ :company withdraw <amount>
+│ :company top
+│
+│ UTILITY
+│ :menu :help :boxes :talk :play <song>
+╰────────────────────────────╯
+`;
+}
+
+// ============================================================
+// MESSAGE HANDLER
+// ============================================================
+
+async function handleMessage(
+    text,
+    sender,
+    sock,
+    jid
+) {
+    if (
+        typeof text !== "string" ||
+        !sender ||
+        !jid
+    ) {
+        return;
+    }
+
+    text = text.trim();
+
+    if (!text) {
+        return;
+    }
+
+    const user = getUser(sender);
+
+    // --------------------------------------------
+    // NON-COMMAND CHAT
+    // --------------------------------------------
+
+    if (!text.startsWith(":")) {
+        const lower = text.toLowerCase();
+
+        if (
+            /\b(hi|hello|hey)\b/.test(lower)
+        ) {
+            return `Tch. You're here.`;
+        }
+
+        if (lower.includes("how are you")) {
+            return `Functional. That's apparently enough.`;
+        }
+
+        if (
+            lower === "bye" ||
+            lower.includes("goodbye")
+        ) {
+            return `Tch. Finally, some peace.`;
+        }
+
+        if (lower.includes("hodekai")) {
+            return getMixedResponse();
+        }
+
+        return null;
+    }
+
+    // --------------------------------------------
+    // COMMAND
+    // --------------------------------------------
+
+    const command = text
+        .slice(1)
+        .trim();
+
+    if (!command) {
+        return menuBox();
+    }
+
+    const args = command.split(/\s+/);
+    const main = args[0].toLowerCase();
+
+    COMMAND_COUNTER++;
+
+    // --------------------------------------------
+    // INFO
+    // --------------------------------------------
+
+    if (main === "bot") {
+        return botInfoBox();
+    }
+
+    if (main === "menu") {
+        return menuBox();
+    }
+
+    if (
+        main === "help" ||
+        main === "commands"
+    ) {
+        return commandBox();
+    }
+
+    if (main === "members") {
+        return `CONCLAVE members: ${getTotalMembers()}`;
+    }
+
+    if (main === "status") {
+        const stats = getStats();
+
+        return `
+╭─〔 📊 STATUS 〕─╮
+│ STATUS: ONLINE
+│ MEMBERS: ${stats.members}
+│ GUILDS: ${stats.guilds}
+│ COMPANIES: ${stats.companies}
+╰─〔 HODEKAI 〕─╯
+`;
+    }
+
+    if (main === "ping") {
+        return "🏓 Pong!";
+    }
+
+    // --------------------------------------------
+    // PROFILE
+    // --------------------------------------------
+
+    if (main === "profile") {
+        return `
+╭─〔 👤 PROFILE 〕─╮
+│ USER: ${sender}
+│ ROLE: ${user.role}
+│ WALLET: ${user.xenoShards} XS
+│ BANK: ${user.bank} XS
+│ TOTAL: ${user.xenoShards + user.bank} XS
+│ WINS: ${user.wins}
+│ JOINED: ${user.joinDate}
+╰─〔 HODEKAI 〕─╯
+`;
+    }
+
+    // --------------------------------------------
+    // BALANCE
+    // --------------------------------------------
+
+    if (main === "bal") {
+        return (
+            `💰 Wallet: ${user.xenoShards} XS\n` +
+            `🏦 Bank: ${user.bank} XS\n` +
+            `Total: ${user.xenoShards + user.bank} XS`
+        );
+    }
+
+    // --------------------------------------------
+    // DAILY
+    // --------------------------------------------
+
+    if (main === "daily") {
+        const today = new Date().toDateString();
+
+        if (user.lastDaily === today) {
+            return "You already claimed today's reward.";
+        }
+
+        user.lastDaily = today;
+
+        giveXenoShards(
+            sender,
+            DAILY_XS
+        );
+
+        saveData();
+
+        return (
+            `🎁 Daily reward: +${DAILY_XS} XS.\n` +
+            `Wallet: ${user.xenoShards} XS.`
+        );
+    }
+
+    // --------------------------------------------
+    // CHEQUE
+    // --------------------------------------------
+
+    if (main === "cheque") {
+        const amount = parseAmount(args[1]);
+
+        if (!amount) {
+            return "Usage: :cheque <amount>";
+        }
+
+        if (amount > 100000) {
+            return "Cheque limit is 100,000 XS.";
+        }
+
+        giveXenoShards(
+            sender,
+            amount
+        );
+
+        saveData();
+
+        return `Cheque cleared: +${amount} XS.`;
+    }
+
+    // --------------------------------------------
+    // PAY
+    // --------------------------------------------
+
+    if (main === "pay") {
+        const target = args[1];
+        const amount = parseAmount(args[2]);
+
+        if (!target || !amount) {
+            return "Usage: :pay <user> <amount>";
+        }
+
+        if (!takeXenoShards(sender, amount)) {
+            return (
+                `Insufficient funds. ` +
+                `Wallet: ${user.xenoShards} XS.`
+            );
+        }
+
+        getUser(target);
+
+        giveXenoShards(
+            target,
+            amount
+        );
+
+        saveData();
+
+        return `Sent ${amount} XS to ${target}.`;
+    }
+
+    // --------------------------------------------
+    // TALK
+    // --------------------------------------------
+
+    if (main === "talk") {
+        return random([
+            "Yes, Father.",
+            "I'm listening.",
+            "You have my attention.",
+            "Go on.",
+            "Tch. Continue."
+        ]);
+    }
+
+    // --------------------------------------------
+    // PLAY
+    // --------------------------------------------
+
+    if (main === "play") {
+        const song = command
+            .slice(5)
+            .trim();
+
+        if (!song) {
+            return "Usage: :play <song>";
+        }
+
+        return `🎵 Now playing: ${song}`;
+    }
+
+    // --------------------------------------------
+    // BANK
+    // --------------------------------------------
+
+    if (main === "bank") {
+        const sub =
+            (args[1] || "").toLowerCase();
+
+        if (
+            sub === "dep" ||
+            sub === "deposit"
+        ) {
+            const amount =
+                parseAmount(args[2]);
+
+            if (!amount) {
+                return "Usage: :bank dep <amount>";
+            }
+
+            if (
+                !takeXenoShards(
+                    sender,
+                    amount
+                )
+            ) {
+                return (
+                    `You only have ` +
+                    `${user.xenoShards} XS in your wallet.`
+                );
+            }
+
+            user.bank += amount;
+
+            saveData();
+
+            return (
+                `Deposited ${amount} XS.\n` +
+                `Bank: ${user.bank} XS.`
+            );
+        }
+
+        if (
+            sub === "wit" ||
+            sub === "withdraw"
+        ) {
+            const amount =
+                parseAmount(args[2]);
+
+            if (!amount) {
+                return "Usage: :bank wit <amount>";
+            }
+
+            if (user.bank < amount) {
+                return (
+                    `You only have ` +
+                    `${user.bank} XS in your bank.`
+                );
+            }
+
+            user.bank -= amount;
+
+            giveXenoShards(
+                sender,
+                amount
+            );
+
+            saveData();
+
+            return (
+                `Withdrew ${amount} XS.\n` +
+                `Wallet: ${user.xenoShards} XS.`
+            );
+        }
+
+        if (
+            sub === "bal" ||
+            sub === "balance"
+        ) {
+            return (
+                `Wallet: ${user.xenoShards} XS\n` +
+                `Bank: ${user.bank} XS\n` +
+                `Total: ${user.xenoShards + user.bank} XS`
+            );
+        }
+
+        return commandBox();
+    }
+
+    // --------------------------------------------
+    // ADMIN
+    // --------------------------------------------
+
+    if (main === "admin") {
+        if (!isAdmin(sender)) {
+            return "Only authorized users can use admin commands.";
+        }
+
+        return `
+╭─〔 ⚡ ADMIN 〕─╮
+│ :kick <user>
+│ :mod add <user>
+│ :mod remove <user>
+│ :mod list
+╰─〔 AUTHORIZED USERS ONLY 〕─╯
+`;
+    }
+
+    // --------------------------------------------
+    // MOD
+    // --------------------------------------------
+
+    if (main === "mod") {
+        if (!isOwner(sender)) {
+            return "Only Father and Co-Creator can manage mods.";
+        }
+
+        const sub = args[1];
+        const target = args[2];
+
+        if (
+            sub === "add" &&
+            target
+        ) {
+            if (!MODS.includes(target)) {
+                MODS.push(target);
+            }
+
+            saveData();
+
+            return `Added ${target} as a mod.`;
+        }
+
+        if (
+            sub === "remove" &&
+            target
+        ) {
+            MODS = MODS.filter(
+                mod => mod !== target
+            );
+
+            saveData();
+
+            return `Removed ${target} from mods.`;
+        }
+
+        if (sub === "list") {
+            return (
+                `MODS: ` +
+                `${MODS.join(", ") || "none"}`
+            );
+        }
+
+        return (
+            "Usage: :mod add <user>, " +
+            ":mod remove <user>, " +
+            ":mod list"
+        );
+    }
+
+    // --------------------------------------------
+    // KICK MARKER
+    // --------------------------------------------
+
+    if (main === "kick") {
+        if (!isAdmin(sender)) {
+            return "Only admins can use that.";
+        }
+
+        const target = args[1];
+
+        if (!target) {
+            return "Usage: :kick <user>";
+        }
+
+        return (
+            `⚠️ ${target} has been ` +
+            `marked for removal.`
+        );
+    }
+
+    return (
+        `Unknown command: ${main}. ` +
+        `Type :help.`
+    );
+}
+
+// ============================================================
+// WHATSAPP CONNECTION
+// ============================================================
+
+let reconnectTimer = null;
+let activeSocket = null;
+
+function scheduleReconnect() {
+    if (reconnectTimer) {
+        return;
+    }
+
+    console.log("🔄 Reconnect scheduled in 5 seconds...");
+
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connectToWhatsApp();
+    }, 5000);
+}
+
+async function connectToWhatsApp() {
+    try {
+        console.log("");
+        console.log("====================================");
+        console.log("📱 HODEKAI WHATSAPP CONNECTION");
+        console.log("====================================");
+        console.log(
+            "📱 Bot number: " +
+            BOT_NUMBER
+        );
+        console.log(
+            "📱 Starting WhatsApp connection..."
+        );
+
+        const {
+            state,
+            saveCreds
+        } = await useMultiFileAuthState(
+            AUTH_DIR
+        );
+
+        const {
+            version
+        } = await fetchLatestBaileysVersion();
+
+        const sock = makeWASocket({
+            version,
+
+            auth: state,
+
+            keepAliveIntervalMs: 30000,
+
+            markOnlineOnConnect: true,
+
+            syncFullHistory: false,
+
+            generateHighQualityLinkPreview: false
+        });
+
+        activeSocket = sock;
+
+        // IMPORTANT:
+        // Save credentials immediately whenever Baileys
+        // updates them.
+        sock.ev.on(
+            "creds.update",
+            saveCreds
+        );
+
+        // ====================================================
+        // CONNECTION UPDATE
+        // ====================================================
+
+        let pairingRequested = false;
+
+        sock.ev.on(
+            "connection.update",
+            async update => {
+                const {
+                    connection,
+                    lastDisconnect
+                } = update;
+
+                // ------------------------------------------------
+                // PAIRING CODE
+                // ------------------------------------------------
+
+                if (
+                    !state.creds.registered &&
+                    !pairingRequested
+                ) {
+                    pairingRequested = true;
+
+                    setTimeout(
+                        async () => {
+                            try {
+                                if (
+                                    state.creds.registered
+                                ) {
+                                    return;
+                                }
+
+                                console.log("");
+                                console.log(
+                                    "🔑 REQUESTING HODEKAI LOGIN CODE..."
+                                );
+
+                                const code =
+                                    await sock.requestPairingCode(
+                                        BOT_NUMBER
+                                    );
+
+                                console.log("");
+                                console.log(
+                                    "╔════════════════════════════════╗"
+                                );
+                                console.log(
+                                    "║     🔐 HODEKAI LOGIN CODE      ║"
+                                );
+                                console.log(
+                                    "╠════════════════════════════════╣"
+                                );
+                                console.log(
+                                    `║        ${code}                 ║`
+                                );
+                                console.log(
+                                    "╠════════════════════════════════╣"
+                                );
+                                console.log(
+                                    "║ WhatsApp → Linked Devices      ║"
+                                );
+                                console.log(
+                                    "║ → Link with phone number       ║"
+                                );
+                                console.log(
+                                    "╚════════════════════════════════╝"
+                                );
+                                console.log("");
+                            } catch (error) {
+                                console.error(
+                                    "❌ Pairing code error:",
+                                    error.message
+                                );
+                            }
+                        },
+                        2000
+                    );
+                }
+
+                // ------------------------------------------------
+                // CONNECTION OPEN
+                // ------------------------------------------------
+
+                if (connection === "open") {
+                    console.log("");
+                    console.log(
+                        "╔════════════════════════════════════╗"
+                    );
+                    console.log(
+                        "║       🖤 HODEKAI CONNECTED         ║"
+                    );
+                    console.log(
+                        "╠════════════════════════════════════╣"
+                    );
+                    console.log(
+                        "║ WhatsApp connection: ONLINE        ║"
+                    );
+                    console.log(
+                        "║ Conclave systems: ACTIVE          ║"
+                    );
+                    console.log(
+                        "╚════════════════════════════════════╝"
+                    );
+                    console.log("");
+                }
+
+                // ------------------------------------------------
+                // CONNECTION CLOSED
+                // ------------------------------------------------
+
+                if (connection === "close") {
+                    const statusCode =
+                        lastDisconnect
+                            ?.error
+                            ?.output
+                            ?.statusCode;
+
+                    console.log("");
+                    console.log(
+                        "⚠️ WhatsApp connection closed."
+                    );
+
+                    console.log(
+                        "📛 Status code:",
+                        statusCode || "unknown"
+                    );
+
+                    const loggedOut =
+                        statusCode ===
+                        DisconnectReason.loggedOut;
+
+                    if (loggedOut) {
+                        console.log(
+                            "🚪 WhatsApp session logged out."
+                        );
+
+                        console.log(
+                            "🧹 Delete auth_info_baileys and pair again."
+                        );
+
+                        return;
+                    }
+
+                    // 515 / restartRequired is allowed to reconnect.
+                    if (
+                        statusCode ===
+                        DisconnectReason.restartRequired
+                    ) {
+                        console.log(
+                            "🔄 WhatsApp requested a restart."
+                        );
+                    } else {
+                        console.log(
+                            "🔄 Connection lost. Reconnecting..."
+                        );
+                    }
+
+                    if (
+                        activeSocket === sock
+                    ) {
+                        activeSocket = null;
+                    }
+
+                    scheduleReconnect();
+                }
+            }
+        );
+
+        // ====================================================
+        // INCOMING MESSAGES
+        // ====================================================
+
+        sock.ev.on(
+            "messages.upsert",
+            async ({ messages }) => {
+                for (const msg of messages) {
+                    try {
+                        if (!msg.message) {
+                            continue;
+                        }
+
+                        if (
+                            msg.key.fromMe
+                        ) {
+                            continue;
+                        }
+
+                        const remoteJid =
+                            msg.key.remoteJid;
+
+                        if (!remoteJid) {
+                            continue;
+                        }
+
+                        // Correct sender handling:
+                        // DMs use remoteJid.
+                        // Groups use participant.
+                        const senderJid =
+                            msg.key.participant ||
+                            remoteJid;
+
+                        const sender =
+                            senderJid
+                                .split("@")[0]
+                                .replace(
+                                    /\D/g,
+                                    ""
+                                );
+
+                        const messageContent =
+                            msg.message;
+
+                        let text = "";
+
+                        if (
+                            messageContent
+                                .conversation
+                        ) {
+                            text =
+                                messageContent.conversation;
+                        } else if (
+                            messageContent
+                                .extendedTextMessage
+                                ?.text
+                        ) {
+                            text =
+                                messageContent
+                                    .extendedTextMessage
+                                    .text;
+                        } else if (
+                            messageContent
+                                .imageMessage
+                                ?.caption
+                        ) {
+                            text =
+                                messageContent
+                                    .imageMessage
+                                    .caption;
+                        } else if (
+                            messageContent
+                                .videoMessage
+                                ?.caption
+                        ) {
+                            text =
+                                messageContent
+                                    .videoMessage
+                                    .caption;
+                        }
+
+                        if (!text) {
+                            continue;
+                        }
+
+                        console.log("");
+                        console.log(
+                            "📩 MESSAGE RECEIVED"
+                        );
+                        console.log(
+                            "FROM:",
+                            sender
+                        );
+                        console.log(
+                            "TEXT:",
+                            text
+                        );
+
+                        const reply =
+                            await handleMessage(
+                                text,
+                                sender,
+                                sock,
+                                remoteJid
+                            );
+
+                        // Don't send undefined/null replies.
+                        if (
+                            typeof reply !==
+                                "string" ||
+                            !reply.trim()
+                        ) {
+                            continue;
+                        }
+
+                        await sock.sendMessage(
+                            remoteJid,
+                            {
+                                text: reply
+                            }
+                        );
+
+                        console.log(
+                            "✅ Reply sent."
+                        );
+
+                    } catch (error) {
+                        console.error(
+                            "❌ Error handling message:",
+                            error.message
+                        );
+                    }
+                }
+            }
+        );
+
+    } catch (error) {
+        console.error("");
+        console.error(
+            "❌ WhatsApp startup error:",
+            error.message
+        );
+
+        console.error(
+            "🔄 Retrying in 5 seconds..."
+        );
+
+        scheduleReconnect();
+    }
+}
+
+// ============================================================
+// PROCESS HANDLERS
+// ============================================================
+
+process.on(
+    "SIGINT",
+    () => {
+        console.log(
+            "\n🛑 HODEKAI shutting down..."
+        );
+
+        saveData();
+
+        process.exit(0);
+    }
+);
+
+process.on(
+    "SIGTERM",
+    () => {
+        console.log(
+            "\n🛑 HODEKAI received SIGTERM..."
+        );
+
+        saveData();
+
+        process.exit(0);
+    }
+);
+
+process.on(
+    "uncaughtException",
+    error => {
+        console.error(
+            "💥 UNCAUGHT EXCEPTION:",
+            error
+        );
+
+        saveData();
+
+        // Let Render restart the process cleanly.
+        process.exit(1);
+    }
+);
+
+process.on(
+    "unhandledRejection",
+    error => {
+        console.error(
+            "💥 UNHANDLED REJECTION:",
+            error
+        );
+    }
+);
+
+// ============================================================
+// START
+// ============================================================
+
+loadData();
+
+console.log("");
+console.log("========================================");
+console.log("🖤 HODEKAI BOT v5.0");
+console.log("🏛️ CONCLAVE INDUSTRIES");
+console.log("========================================");
+console.log(
+    "📱 BOT NUMBER:",
+    BOT_NUMBER
+);
+console.log(
+    "📡 WhatsApp system starting..."
+);
+console.log("========================================");
+console.log("");
+
+connectToWhatsApp();
